@@ -1,0 +1,124 @@
+name: CI/CD Pipeline - Build, Test, Deploy (Docker/Shell)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  # ===============================================================
+  # JOB 1: BUILD (Construção da Imagem)
+  # ===============================================================
+  build_image:
+    name: 1. BUILD
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.image_build.outputs.image_tag }}
+
+    steps:
+      - name: Checkout do Código
+        # Única Action de terceiros aceita: utilitário essencial do GitHub
+        uses: actions/checkout@v4
+
+      - name: Construir a Imagem e Definir Tag
+        id: image_build
+        run: |
+          # Usa o SHA do commit para taggear a imagem
+          IMAGE_TAG=${{ github.sha }}
+          docker build . -t lab-api:$IMAGE_TAG
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Salvar Imagem Docker como Artefato (Passagem entre Jobs)
+        # Transforma a imagem em um arquivo .tar para ser passada ao Job de Teste
+        run: docker save lab-api:${{ github.sha }} -o image.tar
+
+      - name: Upload Artefato da Imagem
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-docker-image
+          path: image.tar
+
+  # ===============================================================
+  # JOB 2: TEST (Execução dos Testes Unitários)
+  # ===============================================================
+  run_tests:
+    name: 2. TEST
+    needs: build_image 
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do Código
+        uses: actions/checkout@v4
+
+      - name: Download Artefato da Imagem
+        uses: actions/download-artifact@v4
+        with:
+          name: built-docker-image
+
+      - name: Carregar Imagem Docker Salva
+        run: docker load -i image.tar
+
+      - name: Executar Testes Unitários no Docker
+        run: |
+          # O comando docker run executa o script de teste dentro do container.
+          IMAGE_TAG=${{ needs.build_image.outputs.image_tag }}
+          # O '--rm' garante que o container seja removido após o teste.
+          docker run --rm lab-api:$IMAGE_TAG python -m unittest test_app.py
+          
+  # ===============================================================
+  # JOB 3: DEPLOY (Implantação na Nuvem)
+  # ===============================================================
+  deploy:
+    name: 3. DEPLOY
+    needs: run_tests 
+    runs-on: ubuntu-latest
+    
+    env:
+      IMAGE_NAME: gcr.io/${{ secrets.GCP_PROJECT_ID }}/lab-api
+      SERVICE_NAME: lab-api-service
+      REGION: us-central1
+
+    steps:
+      - name: Checkout do Código
+        uses: actions/checkout@v4
+
+      - name: Download Artefato da Imagem
+        uses: actions/download-artifact@v4
+        with:
+          name: built-docker-image
+
+      - name: Carregar Imagem Docker Salva
+        run: docker load -i image.tar
+
+      - name: Configurar e Autenticar no Google Cloud SDK (Shell)
+        run: |
+          # Instala o Google Cloud SDK (gcloud) via script shell
+          sudo apt-get update && sudo apt-get install -y google-cloud-sdk
+          
+          # Autenticação via Chave de Serviço (Secrets)
+          # A chave é passada como Secret e salva temporariamente em um arquivo
+          echo "${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}" > /tmp/key.json
+          gcloud auth activate-service-account --key-file=/tmp/key.json
+          gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
+          gcloud auth configure-docker
+          rm /tmp/key.json # Limpa o arquivo de chave
+
+      - name: Taggear e Fazer Push da Imagem (Push)
+        run: |
+          IMAGE_TAG=${{ needs.build_image.outputs.image_tag }}
+          # Taggeia a imagem testada com o nome do GCR e a tag única
+          docker tag lab-api:$IMAGE_TAG $IMAGE_NAME:$IMAGE_TAG
+          # Faz o push para o Container Registry
+          docker push $IMAGE_NAME:$IMAGE_TAG
+
+      - name: Implantação no Cloud Run (Deploy)
+        run: |
+          # Comando gcloud para implantar no Cloud Run
+          IMAGE_TAG=${{ needs.build_image.outputs.image_tag }}
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image $IMAGE_NAME:$IMAGE_TAG \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 1313
