@@ -29,5 +29,6 @@ class APITestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
 
+TESTE
 if __name__ == '__main__':
     unittest.main()

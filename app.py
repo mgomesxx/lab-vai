@@ -13,7 +13,7 @@ SWAGGER_URL = '/swagger'
 API_DOC_URL = '/static/swagger.json'
 swaggerui_blueprint = get_swaggerui_blueprint(SWAGGER_URL, API_DOC_URL)
 app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
-
+#OI TO TESTANDO
 @app.route('/')
 def home():
     return jsonify(message="API is running")
