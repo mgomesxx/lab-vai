@@ -13,12 +13,12 @@ jobs:
   build_image:
     name: 1. BUILD
     runs-on: ubuntu-latest
+    # Define o output para o Job de Teste/Deploy
     outputs:
       image_tag: ${{ steps.image_build.outputs.image_tag }}
 
     steps:
       - name: Checkout do Código
-        # Única Action de terceiros aceita: utilitário essencial do GitHub
         uses: actions/checkout@v4
 
       - name: Construir a Imagem e Definir Tag
@@ -29,7 +29,7 @@ jobs:
           docker build . -t lab-api:$IMAGE_TAG
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Salvar Imagem Docker como Artefato (Passagem entre Jobs)
+      - name: Salvar Imagem Docker como Artefato
         # Transforma a imagem em um arquivo .tar para ser passada ao Job de Teste
         run: docker save lab-api:${{ github.sha }} -o image.tar
 
@@ -48,9 +48,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout do Código
-        uses: actions/checkout@v4
-
       - name: Download Artefato da Imagem
         uses: actions/download-artifact@v4
         with:
@@ -80,9 +77,6 @@ jobs:
       REGION: us-central1
 
     steps:
-      - name: Checkout do Código
-        uses: actions/checkout@v4
-
       - name: Download Artefato da Imagem
         uses: actions/download-artifact@v4
         with:
@@ -93,54 +87,39 @@ jobs:
 
       - name: Configurar e Autenticar no Google Cloud SDK (Shell)
         run: |
-          # Instala o Google Cloud SDK (gcloud) via script shell
-          sudo apt-get update && sudo apt-get install -y google-cloud-sdk
+          # 1. Instala as dependências necessárias para o método oficial (CORREÇÃO)
+          sudo apt-get update && sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
           
-          # Autenticação via Chave de Serviço (Secrets)
-          # A chave é passada como Secret e salva temporariamente em um arquivo
+          # 2. Adiciona a chave GPG pública e o repositório do Google Cloud
+          echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+          curl https://packages.cloud.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+          
+          # 3. Atualiza e instala o CLI
+          sudo apt-get update
+          sudo apt-get install -y google-cloud-cli
+          
+          # 4. Autenticação na nuvem
           echo "${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}" > /tmp/key.json
           gcloud auth activate-service-account --key-file=/tmp/key.json
           gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
           gcloud auth configure-docker
-          rm /tmp/key.json # Limpa o arquivo de chave
+          rm /tmp/key.json
 
       - name: Taggear e Fazer Push da Imagem (Push)
         run: |
           IMAGE_TAG=${{ needs.build_image.outputs.image_tag }}
           # Taggeia a imagem testada com o nome do GCR e a tag única
-          docker tag lab-api:$IMAGE_TAG $IMAGE_NAME:$IMAGE_TAG
+          docker tag lab-api:$IMAGE_TAG ${{ env.IMAGE_NAME }}:$IMAGE_TAG
           # Faz o push para o Container Registry
-          docker push $IMAGE_NAME:$IMAGE_TAG
+          docker push ${{ env.IMAGE_NAME }}:$IMAGE_TAG
 
       - name: Implantação no Cloud Run (Deploy)
         run: |
           # Comando gcloud para implantar no Cloud Run
           IMAGE_TAG=${{ needs.build_image.outputs.image_tag }}
           gcloud run deploy ${{ env.SERVICE_NAME }} \
-            --image $IMAGE_NAME:$IMAGE_TAG \
+            --image ${{ env.IMAGE_NAME }}:$IMAGE_TAG \
             --region ${{ env.REGION }} \
             --platform managed \
             --allow-unauthenticated \
             --port 1313
-
-
-
-            - name: Configurar e Autenticar no Google Cloud SDK (Shell)
-        run: |
-          # 1. Instala as dependências necessárias para o método oficial
-          sudo apt-get update && sudo apt-get install -y apt-transport-https ca-certificates gnupg curl
-          
-          # 2. Adiciona a chave GPG pública do Google Cloud
-          echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
-          curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
-          
-          # 3. Atualiza e instala o gcloud SDK (Comando Oficial)
-          sudo apt-get update
-          sudo apt-get install -y google-cloud-cli
-          
-          # 4. Autenticação (Comandos Antigos)
-          echo "${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}" > /tmp/key.json
-          gcloud auth activate-service-account --key-file=/tmp/key.json
-          gcloud config set project ${{ secrets.GCP_PROJECT_ID }}
-          gcloud auth configure-docker
-          rm /tmp/key.json # Limpa o arquivo de chave
